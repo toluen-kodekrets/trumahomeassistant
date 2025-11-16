@@ -3,6 +3,10 @@ Adding the Truma with iNet X to Home Assistant
 
 Readme for the Home Assistant addon:
 
+Wiring:
+  [Wiring](https://github.com/danielfett/inetbox.py)
+
+Also when using iNet X panel, You first must have the iNet X panel connected at the same time as the raspberri pi, turn on ventilation mode, then unplug the panel and then it can be controlled by this setup with the raspberri pi.
 
 ---
 
