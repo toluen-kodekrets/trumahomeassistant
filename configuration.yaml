@@ -1,0 +1,417 @@
+
+input_select:
+  truma_power_mode:
+    name: Truma Power Mode
+    options:
+      - "Gas only"
+      - "Electric - low power"
+      - "Electric - high power"
+      - "Mix - low power"
+      - "Mix - high power"
+    initial: "Gas only"
+
+  truma_boiler_mode:
+    name: Truma Boiler Mode
+    options:
+      - "Boiler off"
+      - "Eco"
+      - "Hot"
+      - "Boost"
+    initial: "Eco"
+
+
+mqtt:
+  climate:
+    - name: "Truma Combi"
+      unique_id: truma_combi
+
+      modes:
+        - "off"
+        - "heat"
+        - "fan_only"     # vent-only
+
+      # Simple presets: heat only vs heat+water
+      preset_modes:
+        - "heat"
+        - "heat+water"
+
+      min_temp: 5
+      max_temp: 29
+      temp_step: 1.0
+      precision: 1.0
+      temperature_unit: "C"
+
+      # Current room temp from Trumanita
+      current_temperature_topic: "truma/report/room_temp"
+      current_temperature_template: "{{ value | float | round(1) }}"
+
+      fan_modes:
+        - "off"
+        - "low"
+        - "medium"
+        - "high"
+        - "max"
+
+      # All commands via config JSON
+      mode_command_topic: "truma/control/truma_config"
+      temperature_command_topic: "truma/control/truma_config"
+      preset_mode_command_topic: "truma/control/truma_config"
+      fan_mode_command_topic: "truma/control/truma_config"
+
+      optimistic: true
+
+      # ==================== MODE CHANGE ============================
+      mode_command_template: >
+        {%- set target_temp = state_attr('climate.truma_combi', 'temperature') | float(20) -%}
+        {%- set preset = state_attr('climate.truma_combi', 'preset_mode') or 'heat' -%}
+        {%- set hvac = value -%}
+        {%- set fan_mode = state_attr('climate.truma_combi', 'fan_mode') or 'medium' -%}
+
+        {# ----- POWER MODE (pretty label -> internal key) ----- #}
+        {%- set power_state = states('input_select.truma_power_mode') %}
+        {%- set power_key_map = {
+          'Gas only': 'gas',
+          'Electric - low power': 'electric_lowpower',
+          'Electric - high power': 'electric_highpower',
+          'Mix - low power': 'mix_lowpower',
+          'Mix - high power': 'mix_highpower'
+        } -%}
+        {%- set power = power_key_map.get(power_state, 'gas') -%}
+
+        {%- set energymix_map = {
+          'gas': 'gas',
+          'electric_lowpower': 'electric',
+          'electric_highpower': 'electric',
+          'mix_lowpower': 'mix1',
+          'mix_highpower': 'mix2'
+        } -%}
+        {%- set mode_map = {
+          'gas': 'gas',
+          'electric_lowpower': 'mix1',
+          'electric_highpower': 'mix2',
+          'mix_lowpower': 'mix1',
+          'mix_highpower': 'mix2'
+        } -%}
+        {%- set mode2_map = {
+          'gas': 'gas',
+          'electric_lowpower': 'electric',
+          'electric_highpower': 'electric',
+          'mix_lowpower': 'mix',
+          'mix_highpower': 'mix'
+        } -%}
+        {%- set emix = energymix_map.get(power, 'gas') -%}
+        {%- set truma_mode = mode_map.get(power, 'gas') -%}
+        {%- set truma_mode2 = mode2_map.get(power, 'gas') -%}
+
+        {# ----- BOILER MODE (pretty label -> internal key) ----- #}
+        {%- set boiler_state = states('input_select.truma_boiler_mode') %}
+        {%- set boiler_key_map = {
+          'Boiler off': 'off',
+          'Eco': 'eco',
+          'Hot': 'hot',
+          'Boost': 'boost'
+        } -%}
+        {%- set boiler_selected = boiler_key_map.get(boiler_state, 'eco') -%}
+
+        {%- if hvac in ['off', 'fan_only'] %}
+          {%- set heater = 'off' -%}
+          {%- set boiler = 'off' -%}
+        {%- else %}
+          {%- set heater = 'on' -%}
+          {%- if preset == 'heat+water' %}
+            {%- set boiler = boiler_selected -%}
+          {%- else %}
+            {%- set boiler = 'off' -%}
+          {%- endif %}
+        {%- endif %}
+
+        {# ---- Fan mapping ---- #}
+        {%- set fan_map = {
+          'off': 'off',
+          'low': 'low',
+          'medium': 'medium',
+          'high': 'high',
+          'max': 'max'
+        } -%}
+        {%- set truma_fan = fan_map.get(fan_mode, 'medium') -%}
+
+        {
+          "heater": "{{ heater }}",
+          "boiler": "{{ boiler }}",
+          "temp": {{ target_temp | int }},
+          "fan": "{{ truma_fan }}",
+          "energymix": "{{ emix }}",
+          "mode": "{{ truma_mode }}",
+          "mode2": "{{ truma_mode2 }}"
+        }
+
+      # ================= TEMPERATURE CHANGE ========================
+      temperature_command_template: >
+        {%- set new_temp = value | float | round(0) -%}
+        {%- set preset = state_attr('climate.truma_combi', 'preset_mode') or 'heat' -%}
+        {%- set hvac = states('climate.truma_combi') -%}
+        {%- set fan_mode = state_attr('climate.truma_combi', 'fan_mode') or 'medium' -%}
+
+        {%- set power_state = states('input_select.truma_power_mode') %}
+        {%- set power_key_map = {
+          'Gas only': 'gas',
+          'Electric - low power': 'electric_lowpower',
+          'Electric - high power': 'electric_highpower',
+          'Mix - low power': 'mix_lowpower',
+          'Mix - high power': 'mix_highpower'
+        } -%}
+        {%- set power = power_key_map.get(power_state, 'gas') -%}
+
+        {%- set energymix_map = {
+          'gas': 'gas',
+          'electric_lowpower': 'electric',
+          'electric_highpower': 'electric',
+          'mix_lowpower': 'mix1',
+          'mix_highpower': 'mix2'
+        } -%}
+        {%- set mode_map = {
+          'gas': 'gas',
+          'electric_lowpower': 'mix1',
+          'electric_highpower': 'mix2',
+          'mix_lowpower': 'mix1',
+          'mix_highpower': 'mix2'
+        } -%}
+        {%- set mode2_map = {
+          'gas': 'gas',
+          'electric_lowpower': 'electric',
+          'electric_highpower': 'electric',
+          'mix_lowpower': 'mix',
+          'mix_highpower': 'mix'
+        } -%}
+        {%- set emix = energymix_map.get(power, 'gas') -%}
+        {%- set truma_mode = mode_map.get(power, 'gas') -%}
+        {%- set truma_mode2 = mode2_map.get(power, 'gas') -%}
+
+        {%- set boiler_state = states('input_select.truma_boiler_mode') %}
+        {%- set boiler_key_map = {
+          'Boiler off': 'off',
+          'Eco': 'eco',
+          'Hot': 'hot',
+          'Boost': 'boost'
+        } -%}
+        {%- set boiler_selected = boiler_key_map.get(boiler_state, 'eco') -%}
+
+        {%- if hvac in ['off', 'fan_only'] %}
+          {%- set heater = 'off' -%}
+          {%- set boiler = 'off' -%}
+        {%- else %}
+          {%- set heater = 'on' -%}
+          {%- if preset == 'heat+water' %}
+            {%- set boiler = boiler_selected -%}
+          {%- else %}
+            {%- set boiler = 'off' -%}
+          {%- endif %}
+        {%- endif %}
+
+        {%- set fan_map = {
+          'off': 'off',
+          'low': 'low',
+          'medium': 'medium',
+          'high': 'high',
+          'max': 'max'
+        } -%}
+        {%- set truma_fan = fan_map.get(fan_mode, 'medium') -%}
+
+        {
+          "heater": "{{ heater }}",
+          "boiler": "{{ boiler }}",
+          "temp": {{ new_temp | int }},
+          "fan": "{{ truma_fan }}",
+          "energymix": "{{ emix }}",
+          "mode": "{{ truma_mode }}",
+          "mode2": "{{ truma_mode2 }}"
+        }
+
+      # ================= PRESET CHANGE (heat vs heat+water) ========
+      preset_mode_command_template: >
+        {%- set preset = value -%}
+        {%- set target_temp = state_attr('climate.truma_combi', 'temperature') | float(20) -%}
+        {%- set hvac = states('climate.truma_combi') -%}
+        {%- set fan_mode = state_attr('climate.truma_combi', 'fan_mode') or 'medium' -%}
+
+        {%- set power_state = states('input_select.truma_power_mode') %}
+        {%- set power_key_map = {
+          'Gas only': 'gas',
+          'Electric - low power': 'electric_lowpower',
+          'Electric - high power': 'electric_highpower',
+          'Mix - low power': 'mix_lowpower',
+          'Mix - high power': 'mix_highpower'
+        } -%}
+        {%- set power = power_key_map.get(power_state, 'gas') -%}
+
+        {%- set energymix_map = {
+          'gas': 'gas',
+          'electric_lowpower': 'electric',
+          'electric_highpower': 'electric',
+          'mix_lowpower': 'mix1',
+          'mix_highpower': 'mix2'
+        } -%}
+        {%- set mode_map = {
+          'gas': 'gas',
+          'electric_lowpower': 'mix1',
+          'electric_highpower': 'mix2',
+          'mix_lowpower': 'mix1',
+          'mix_highpower': 'mix2'
+        } -%}
+        {%- set mode2_map = {
+          'gas': 'gas',
+          'electric_lowpower': 'electric',
+          'electric_highpower': 'electric',
+          'mix_lowpower': 'mix',
+          'mix_highpower': 'mix'
+        } -%}
+        {%- set emix = energymix_map.get(power, 'gas') -%}
+        {%- set truma_mode = mode_map.get(power, 'gas') -%}
+        {%- set truma_mode2 = mode2_map.get(power, 'gas') -%}
+
+        {%- set boiler_state = states('input_select.truma_boiler_mode') %}
+        {%- set boiler_key_map = {
+          'Boiler off': 'off',
+          'Eco': 'eco',
+          'Hot': 'hot',
+          'Boost': 'boost'
+        } -%}
+        {%- set boiler_selected = boiler_key_map.get(boiler_state, 'eco') -%}
+
+        {%- if hvac in ['off', 'fan_only'] %}
+          {%- set heater = 'off' -%}
+          {%- set boiler = 'off' -%}
+        {%- else %}
+          {%- set heater = 'on' -%}
+          {%- if preset == 'heat+water' %}
+            {%- set boiler = boiler_selected -%}
+          {%- else %}
+            {%- set boiler = 'off' -%}
+          {%- endif %}
+        {%- endif %}
+
+        {%- set fan_map = {
+          'off': 'off',
+          'low': 'low',
+          'medium': 'medium',
+          'high': 'high',
+          'max': 'max'
+        } -%}
+        {%- set truma_fan = fan_map.get(fan_mode, 'medium') -%}
+
+        {
+          "heater": "{{ heater }}",
+          "boiler": "{{ boiler }}",
+          "temp": {{ target_temp | int }},
+          "fan": "{{ truma_fan }}",
+          "energymix": "{{ emix }}",
+          "mode": "{{ truma_mode }}",
+          "mode2": "{{ truma_mode2 }}"
+        }
+
+      # ================= FAN MODE CHANGE ===========================
+      fan_mode_command_template: >
+        {%- set new_fan_mode = value -%}
+        {%- set preset = state_attr('climate.truma_combi', 'preset_mode') or 'heat' -%}
+        {%- set hvac = states('climate.truma_combi') -%}
+        {%- set target_temp = state_attr('climate.truma_combi', 'temperature') | float(20) -%}
+
+        {%- set power_state = states('input_select.truma_power_mode') %}
+        {%- set power_key_map = {
+          'Gas only': 'gas',
+          'Electric - low power': 'electric_lowpower',
+          'Electric - high power': 'electric_highpower',
+          'Mix - low power': 'mix_lowpower',
+          'Mix - high power': 'mix_highpower'
+        } -%}
+        {%- set power = power_key_map.get(power_state, 'gas') -%}
+
+        {%- set energymix_map = {
+          'gas': 'gas',
+          'electric_lowpower': 'electric',
+          'electric_highpower': 'electric',
+          'mix_lowpower': 'mix1',
+          'mix_highpower': 'mix2'
+        } -%}
+        {%- set mode_map = {
+          'gas': 'gas',
+          'electric_lowpower': 'mix1',
+          'electric_highpower': 'mix2',
+          'mix_lowpower': 'mix1',
+          'mix_highpower': 'mix2'
+        } -%}
+        {%- set mode2_map = {
+          'gas': 'gas',
+          'electric_lowpower': 'electric',
+          'electric_highpower': 'electric',
+          'mix_lowpower': 'mix',
+          'mix_highpower': 'mix'
+        } -%}
+        {%- set emix = energymix_map.get(power, 'gas') -%}
+        {%- set truma_mode = mode_map.get(power, 'gas') -%}
+        {%- set truma_mode2 = mode2_map.get(power, 'gas') -%}
+
+        {%- set boiler_state = states('input_select.truma_boiler_mode') %}
+        {%- set boiler_key_map = {
+          'Boiler off': 'off',
+          'Eco': 'eco',
+          'Hot': 'hot',
+          'Boost': 'boost'
+        } -%}
+        {%- set boiler_selected = boiler_key_map.get(boiler_state, 'eco') -%}
+
+        {%- if hvac in ['off', 'fan_only'] %}
+          {%- set heater = 'off' -%}
+          {%- set boiler = 'off' -%}
+        {%- else %}
+          {%- set heater = 'on' -%}
+          {%- if preset == 'heat+water' %}
+            {%- set boiler = boiler_selected -%}
+          {%- else %}
+            {%- set boiler = 'off' -%}
+          {%- endif %}
+        {%- endif %}
+
+        {%- set fan_map = {
+          'off': 'off',
+          'low': 'low',
+          'medium': 'medium',
+          'high': 'high',
+          'max': 'max'
+        } -%}
+        {%- set truma_fan = fan_map.get(new_fan_mode, 'medium') -%}
+
+        {
+          "heater": "{{ heater }}",
+          "boiler": "{{ boiler }}",
+          "temp": {{ target_temp | int }},
+          "fan": "{{ truma_fan }}",
+          "energymix": "{{ emix }}",
+          "mode": "{{ truma_mode }}",
+          "mode2": "{{ truma_mode2 }}"
+        }
+
+  sensor:
+    - name: "Truma Room Temperature"
+      state_topic: "truma/report/room_temp"
+      unit_of_measurement: "°C"
+      device_class: temperature
+
+    - name: "Truma Water Temperature"
+      state_topic: "truma/report/water_temp"
+      unit_of_measurement: "°C"
+      device_class: temperature
+
+    - name: "Truma Error State"
+      state_topic: "truma/report/error_state"
+
+    - name: "Voltage repported by Truma"
+      state_topic: "truma/report/voltage"
+      unit_of_measurement: "V"
+      device_class: voltage
+
+    - name: "Truma heating state"
+      state_topic: "truma/report/heating_state"
+
+    - name: "Truma boiler mode"
+      state_topic: "truma/report/boiler_mode"
