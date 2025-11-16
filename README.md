@@ -2,10 +2,7 @@
 Adding the Truma with iNet X to Home Assistant
 
 Readme for the Home Assistant addon:
-Absolutely — here is a clean, well-structured **README.md** suitable for a public GitHub repository for your Home Assistant Trumanita add-on.
 
-You can copy/paste this directly into `README.md`.
-If you want badges, screenshots, installation GIFs, or extra sections, just tell me.
 
 ---
 
@@ -205,3 +202,773 @@ These can be replaced with your own artwork if desired.
 * This add-on packaging, UI, and integration work was created to make Trumanita easy to install and use inside Home Assistant.
 
 ---
+
+
+This method is useful when:
+
+* Home Assistant OS prevents you from editing `/boot/config.txt` directly
+* You cannot use `ha os shell`
+* You want to fix UART before booting
+* You want a clean and guaranteed method
+
+---
+
+# Enabling UART on Raspberry Pi 5 Using the SD Card
+
+### Works for Home Assistant OS (supervised / appliance image)
+
+This guide explains how to enable the hardware UART for use with the **Trumanita** add-on *by editing the SD card directly on another computer*.
+
+This is currently the **most reliable** method for Raspberry Pi 5 with Home Assistant OS.
+
+---
+
+# 🧰 What You Need
+
+* Your Raspberry Pi 5 SD card
+* A computer with an SD card reader
+* A text editor (Notepad++, VSCode, nano, anything)
+
+---
+
+# 📌 Step 1 — Shut down Home Assistant
+
+From the UI:
+
+```
+Settings → System → Hardware → Power → Shutdown
+```
+
+Or via Terminal:
+
+```bash
+ha host shutdown
+```
+
+Wait until LEDs stop blinking.
+
+Remove the SD card.
+
+---
+
+# 📌 Step 2 — Insert the SD card into your computer
+
+Your PC will show a partition named:
+
+```
+hassos-boot
+```
+
+This is the Pi boot partition.
+
+Inside, you will find:
+
+* `config.txt`
+* `firmware`
+* `cmdline.txt`
+* `overlays/`
+
+---
+
+# 📌 Step 3 — Edit `config.txt`
+
+Open:
+
+```
+config.txt
+```
+
+Add the following lines **at the very bottom** (or anywhere under `[all]`):
+
+```txt
+# Enable UART for Trumanita / LIN interface
+enable_uart=1
+dtoverlay=uart0
+```
+
+### Why?
+
+* `enable_uart=1`
+  enables the PL011 UART in the Pi 5 SoC
+
+* `dtoverlay=uart0`
+  exposes it on the GPIO header as `/dev/ttyAMA0`
+
+This ensures the right hardware UART is active *before* Home Assistant boots.
+
+---
+
+# 📌 Step 4 — Ensure serial console is disabled (required)
+
+Still in the `hassos-boot` partition, open:
+
+```
+cmdline.txt
+```
+
+Remove any of these if present:
+
+```
+console=ttyAMA0,115200
+console=serial0,115200
+```
+
+The result should be **one single line**.
+Do **NOT** add line breaks.
+
+Example final line:
+
+```txt
+root=LABEL=hassos-data rd.systemd.unit=haos-init.service
+```
+
+---
+
+# 📌 Step 5 — Save and eject the SD card
+
+Make sure to:
+
+* Save `config.txt`
+* Save `cmdline.txt`
+* Properly eject the SD card to avoid corruption
+
+---
+
+# 📌 Step 6 — Reinsert SD card & boot Pi 5
+
+Insert the card back into your Raspberry Pi 5 and power it on.
+
+Wait for Home Assistant to boot.
+
+---
+
+# 📌 Step 7 — Verify UART is working
+
+Open:
+
+```
+Settings → System → Hardware → All Hardware
+```
+
+You should now see devices like:
+
+```
+/dev/ttyAMA0
+/dev/ttyAMA10
+/dev/ttyS0
+```
+
+The correct one for GPIO UART is usually:
+
+```
+/dev/ttyAMA0
+```
+
+---
+
+# 📌 Step 8 — Configure Trumanita Add-on
+
+In the add-on configuration:
+
+```yaml
+uart_device: /dev/ttyAMA0
+uart_baudrate: 9600
+```
+
+Restart the add-on.
+
+Check logs for:
+
+```
+[CONFIG] UART Device: /dev/ttyAMA0
+[CONFIG] UART Baudrate: 9600
+```
+
+If you see:
+
+```
+[ERROR] Failed to open UART device
+```
+
+it usually means:
+
+* Wiring issue
+* Wrong UART port
+* Adapter not detected
+
+But the Pi UART is now correctly enabled.
+
+---
+
+# ✔ UART Enabled Successfully
+
+You have now enabled the UART interface using the SD card — the safest and most reliable method for Raspberry Pi 5 + Home Assistant OS.
+
+---
+
+
+
+````markdown
+# Home Assistant Configuration – Truma Combi via Trumanita
+
+This file contains the **Home Assistant YAML configuration** for controlling a **Truma Combi** heater using the [Trumanita](https://github.com/vincentgloss/trumanita) LIN → MQTT bridge.
+
+It provides:
+
+- Input selects for **Power Mode** and **Boiler Mode**
+- A full-featured **MQTT climate** entity
+- Rich Jinja2 templates that turn UI state into the JSON config Trumanita expects
+- A set of **MQTT sensors** for temperatures, voltage, and status
+
+All communication uses a single config topic:
+
+```text
+truma/control/truma_config
+````
+
+and several report topics:
+
+```text
+truma/report/room_temp
+truma/report/water_temp
+truma/report/heating_state
+truma/report/boiler_mode
+truma/report/error_state
+truma/report/voltage
+```
+
+---
+
+## 🔧 Input Selects
+
+These are helpers used to control **energy mix / power mode** and **boiler (water heater) mode**.
+
+```yaml
+input_select:
+  truma_power_mode:
+    name: Truma Power Mode
+    options:
+      - "Gas only"
+      - "Electric - low power"
+      - "Electric - high power"
+      - "Mix - low power"
+      - "Mix - high power"
+    initial: "Gas only"
+
+  truma_boiler_mode:
+    name: Truma Boiler Mode
+    options:
+      - "Boiler off"
+      - "Eco"
+      - "Hot"
+      - "Boost"
+    initial: "Eco"
+```
+
+---
+
+## 🌡️ MQTT Climate Entity
+
+The climate entity:
+
+* Controls **heating** vs **fan-only** vs **off**
+* Has presets: `heat` vs `heat+water`
+* Supports fan modes: `off / low / medium / high / max`
+* Reads current temp from `truma/report/room_temp`
+* Sends **full JSON config** to `truma/control/truma_config` on every change
+
+```yaml
+mqtt:
+  climate:
+    - name: "Truma Combi"
+      unique_id: truma_combi
+
+      modes:
+        - "off"
+        - "heat"
+        - "fan_only"     # vent-only
+
+      # Simple presets: heat only vs heat+water
+      preset_modes:
+        - "heat"
+        - "heat+water"
+
+      min_temp: 5
+      max_temp: 29
+      temp_step: 1.0
+      precision: 1.0
+      temperature_unit: "C"
+
+      # Current room temp from Trumanita
+      current_temperature_topic: "truma/report/room_temp"
+      current_temperature_template: "{{ value | float | round(1) }}"
+
+      fan_modes:
+        - "off"
+        - "low"
+        - "medium"
+        - "high"
+        - "max"
+
+      # All commands via config JSON
+      mode_command_topic: "truma/control/truma_config"
+      temperature_command_topic: "truma/control/truma_config"
+      preset_mode_command_topic: "truma/control/truma_config"
+      fan_mode_command_topic: "truma/control/truma_config"
+
+      optimistic: true
+```
+
+---
+
+## 🧠 Command Templates (Jinja2)
+
+All four templates (`mode`, `temperature`, `preset`, `fan`) work the same way:
+
+1. Read the current climate state (mode, target temp, fan, preset).
+2. Read the selected **power mode** and **boiler mode** from `input_select` entities.
+3. Map user-friendly labels → internal Truma values:
+
+   * `energymix`
+   * `mode`
+   * `mode2`
+   * `heater`
+   * `boiler`
+   * `fan`
+4. Emit a **complete JSON object** as payload to `truma/control/truma_config`.
+
+To keep this README tidy, each template is inside a collapsible section.
+
+---
+
+### 🔘 Mode Change Template
+
+<details>
+<summary><strong>Click to expand mode_command_template</strong></summary>
+<br>
+
+```yaml
+      mode_command_template: >
+        {%- set target_temp = state_attr('climate.truma_combi', 'temperature') | float(20) -%}
+        {%- set preset = state_attr('climate.truma_combi', 'preset_mode') or 'heat' -%}
+        {%- set hvac = value -%}
+        {%- set fan_mode = state_attr('climate.truma_combi', 'fan_mode') or 'medium' -%}
+
+        {# ----- POWER MODE (pretty label -> internal key) ----- #}
+        {%- set power_state = states('input_select.truma_power_mode') %}
+        {%- set power_key_map = {
+          'Gas only': 'gas',
+          'Electric - low power': 'electric_lowpower',
+          'Electric - high power': 'electric_highpower',
+          'Mix - low power': 'mix_lowpower',
+          'Mix - high power': 'mix_highpower'
+        } -%}
+        {%- set power = power_key_map.get(power_state, 'gas') -%}
+
+        {%- set energymix_map = {
+          'gas': 'gas',
+          'electric_lowpower': 'electric',
+          'electric_highpower': 'electric',
+          'mix_lowpower': 'mix1',
+          'mix_highpower': 'mix2'
+        } -%}
+        {%- set mode_map = {
+          'gas': 'gas',
+          'electric_lowpower': 'mix1',
+          'electric_highpower': 'mix2',
+          'mix_lowpower': 'mix1',
+          'mix_highpower': 'mix2'
+        } -%}
+        {%- set mode2_map = {
+          'gas': 'gas',
+          'electric_lowpower': 'electric',
+          'electric_highpower': 'electric',
+          'mix_lowpower': 'mix',
+          'mix_highpower': 'mix'
+        } -%}
+        {%- set emix = energymix_map.get(power, 'gas') -%}
+        {%- set truma_mode = mode_map.get(power, 'gas') -%}
+        {%- set truma_mode2 = mode2_map.get(power, 'gas') -%}
+
+        {# ----- BOILER MODE (pretty label -> internal key) ----- #}
+        {%- set boiler_state = states('input_select.truma_boiler_mode') %}
+        {%- set boiler_key_map = {
+          'Boiler off': 'off',
+          'Eco': 'eco',
+          'Hot': 'hot',
+          'Boost': 'boost'
+        } -%}
+        {%- set boiler_selected = boiler_key_map.get(boiler_state, 'eco') -%}
+
+        {%- if hvac in ['off', 'fan_only'] %}
+          {%- set heater = 'off' -%}
+          {%- set boiler = 'off' -%}
+        {%- else %}
+          {%- set heater = 'on' -%}
+          {%- if preset == 'heat+water' %}
+            {%- set boiler = boiler_selected -%}
+          {%- else %}
+            {%- set boiler = 'off' -%}
+          {%- endif %}
+        {%- endif %}
+
+        {# ---- Fan mapping ---- #}
+        {%- set fan_map = {
+          'off': 'off',
+          'low': 'low',
+          'medium': 'medium',
+          'high': 'high',
+          'max': 'max'
+        } -%}
+        {%- set truma_fan = fan_map.get(fan_mode, 'medium') -%}
+
+        {
+          "heater": "{{ heater }}",
+          "boiler": "{{ boiler }}",
+          "temp": {{ target_temp | int }},
+          "fan": "{{ truma_fan }}",
+          "energymix": "{{ emix }}",
+          "mode": "{{ truma_mode }}",
+          "mode2": "{{ truma_mode2 }}"
+        }
+```
+
+</details>
+
+---
+
+### 🌡️ Temperature Change Template
+
+<details>
+<summary><strong>Click to expand temperature_command_template</strong></summary>
+<br>
+
+```yaml
+      temperature_command_template: >
+        {%- set new_temp = value | float | round(0) -%}
+        {%- set preset = state_attr('climate.truma_combi', 'preset_mode') or 'heat' -%}
+        {%- set hvac = states('climate.truma_combi') -%}
+        {%- set fan_mode = state_attr('climate.truma_combi', 'fan_mode') or 'medium' -%}
+
+        {%- set power_state = states('input_select.truma_power_mode') %}
+        {%- set power_key_map = {
+          'Gas only': 'gas',
+          'Electric - low power': 'electric_lowpower',
+          'Electric - high power': 'electric_highpower',
+          'Mix - low power': 'mix_lowpower',
+          'Mix - high power': 'mix_highpower'
+        } -%}
+        {%- set power = power_key_map.get(power_state, 'gas') -%}
+
+        {%- set energymix_map = {
+          'gas': 'gas',
+          'electric_lowpower': 'electric',
+          'electric_highpower': 'electric',
+          'mix_lowpower': 'mix1',
+          'mix_highpower': 'mix2'
+        } -%}
+        {%- set mode_map = {
+          'gas': 'gas',
+          'electric_lowpower': 'mix1',
+          'electric_highpower': 'mix2',
+          'mix_lowpower': 'mix1',
+          'mix_highpower': 'mix2'
+        } -%}
+        {%- set mode2_map = {
+          'gas': 'gas',
+          'electric_lowpower': 'electric',
+          'electric_highpower': 'electric',
+          'mix_lowpower': 'mix',
+          'mix_highpower': 'mix'
+        } -%}
+        {%- set emix = energymix_map.get(power, 'gas') -%}
+        {%- set truma_mode = mode_map.get(power, 'gas') -%}
+        {%- set truma_mode2 = mode2_map.get(power, 'gas') -%}
+
+        {%- set boiler_state = states('input_select.truma_boiler_mode') %}
+        {%- set boiler_key_map = {
+          'Boiler off': 'off',
+          'Eco': 'eco',
+          'Hot': 'hot',
+          'Boost': 'boost'
+        } -%}
+        {%- set boiler_selected = boiler_key_map.get(boiler_state, 'eco') -%}
+
+        {%- if hvac in ['off', 'fan_only'] %}
+          {%- set heater = 'off' -%}
+          {%- set boiler = 'off' -%}
+        {%- else %}
+          {%- set heater = 'on' -%}
+          {%- if preset == 'heat+water' %}
+            {%- set boiler = boiler_selected -%}
+          {%- else %}
+            {%- set boiler = 'off' -%}
+          {%- endif %}
+        {%- endif %}
+
+        {%- set fan_map = {
+          'off': 'off',
+          'low': 'low',
+          'medium': 'medium',
+          'high': 'high',
+          'max': 'max'
+        } -%}
+        {%- set truma_fan = fan_map.get(fan_mode, 'medium') -%}
+
+        {
+          "heater": "{{ heater }}",
+          "boiler": "{{ boiler }}",
+          "temp": {{ new_temp | int }},
+          "fan": "{{ truma_fan }}",
+          "energymix": "{{ emix }}",
+          "mode": "{{ truma_mode }}",
+          "mode2": "{{ truma_mode2 }}"
+        }
+```
+
+</details>
+
+---
+
+### 💧 Preset Change Template (heat vs heat+water)
+
+<details>
+<summary><strong>Click to expand preset_mode_command_template</strong></summary>
+<br>
+
+```yaml
+      preset_mode_command_template: >
+        {%- set preset = value -%}
+        {%- set target_temp = state_attr('climate.truma_combi', 'temperature') | float(20) -%}
+        {%- set hvac = states('climate.truma_combi') -%}
+        {%- set fan_mode = state_attr('climate.truma_combi', 'fan_mode') or 'medium' -%}
+
+        {%- set power_state = states('input_select.truma_power_mode') %}
+        {%- set power_key_map = {
+          'Gas only': 'gas',
+          'Electric - low power': 'electric_lowpower',
+          'Electric - high power': 'electric_highpower',
+          'Mix - low power': 'mix_lowpower',
+          'Mix - high power': 'mix_highpower'
+        } -%}
+        {%- set power = power_key_map.get(power_state, 'gas') -%}
+
+        {%- set energymix_map = {
+          'gas': 'gas',
+          'electric_lowpower': 'electric',
+          'electric_highpower': 'electric',
+          'mix_lowpower': 'mix1',
+          'mix_highpower': 'mix2'
+        } -%}
+        {%- set mode_map = {
+          'gas': 'gas',
+          'electric_lowpower': 'mix1',
+          'electric_highpower': 'mix2',
+          'mix_lowpower': 'mix1',
+          'mix_highpower': 'mix2'
+        } -%}
+        {%- set mode2_map = {
+          'gas': 'gas',
+          'electric_lowpower': 'electric',
+          'electric_highpower': 'electric',
+          'mix_lowpower': 'mix',
+          'mix_highpower': 'mix'
+        } -%}
+        {%- set emix = energymix_map.get(power, 'gas') -%}
+        {%- set truma_mode = mode_map.get(power, 'gas') -%}
+        {%- set truma_mode2 = mode2_map.get(power, 'gas') -%}
+
+        {%- set boiler_state = states('input_select.truma_boiler_mode') %}
+        {%- set boiler_key_map = {
+          'Boiler off': 'off',
+          'Eco': 'eco',
+          'Hot': 'hot',
+          'Boost': 'boost'
+        } -%}
+        {%- set boiler_selected = boiler_key_map.get(boiler_state, 'eco') -%}
+
+        {%- if hvac in ['off', 'fan_only'] %}
+          {%- set heater = 'off' -%}
+          {%- set boiler = 'off' -%}
+        {%- else %}
+          {%- set heater = 'on' -%}
+          {%- if preset == 'heat+water' %}
+            {%- set boiler = boiler_selected -%}
+          {%- else %}
+            {%- set boiler = 'off' -%}
+          {%- endif %}
+        {%- endif %}
+
+        {%- set fan_map = {
+          'off': 'off',
+          'low': 'low',
+          'medium': 'medium',
+          'high': 'high',
+          'max': 'max'
+        } -%}
+        {%- set truma_fan = fan_map.get(fan_mode, 'medium') -%}
+
+        {
+          "heater": "{{ heater }}",
+          "boiler": "{{ boiler }}",
+          "temp": {{ target_temp | int }},
+          "fan": "{{ truma_fan }}",
+          "energymix": "{{ emix }}",
+          "mode": "{{ truma_mode }}",
+          "mode2": "{{ truma_mode2 }}"
+        }
+```
+
+</details>
+
+---
+
+### 🌀 Fan Mode Change Template
+
+<details>
+<summary><strong>Click to expand fan_mode_command_template</strong></summary>
+<br>
+
+```yaml
+      fan_mode_command_template: >
+        {%- set new_fan_mode = value -%}
+        {%- set preset = state_attr('climate.truma_combi', 'preset_mode') or 'heat' -%}
+        {%- set hvac = states('climate.truma_combi') -%}
+        {%- set target_temp = state_attr('climate.truma_combi', 'temperature') | float(20) -%}
+
+        {%- set power_state = states('input_select.truma_power_mode') %}
+        {%- set power_key_map = {
+          'Gas only': 'gas',
+          'Electric - low power': 'electric_lowpower',
+          'Electric - high power': 'electric_highpower',
+          'Mix - low power': 'mix_lowpower',
+          'Mix - high power': 'mix_highpower'
+        } -%}
+        {%- set power = power_key_map.get(power_state, 'gas') -%}
+
+        {%- set energymix_map = {
+          'gas': 'gas',
+          'electric_lowpower': 'electric',
+          'electric_highpower': 'electric',
+          'mix_lowpower': 'mix1',
+          'mix_highpower': 'mix2'
+        } -%}
+        {%- set mode_map = {
+          'gas': 'gas',
+          'electric_lowpower': 'mix1',
+          'electric_highpower': 'mix2',
+          'mix_lowpower': 'mix1',
+          'mix_highpower': 'mix2'
+        } -%}
+        {%- set mode2_map = {
+          'gas': 'gas',
+          'electric_lowpower': 'electric',
+          'electric_highpower': 'electric',
+          'mix_lowpower': 'mix',
+          'mix_highpower': 'mix'
+        } -%}
+        {%- set emix = energymix_map.get(power, 'gas') -%}
+        {%- set truma_mode = mode_map.get(power, 'gas') -%}
+        {%- set truma_mode2 = mode2_map.get(power, 'gas') -%}
+
+        {%- set boiler_state = states('input_select.truma_boiler_mode') %}
+        {%- set boiler_key_map = {
+          'Boiler off': 'off',
+          'Eco': 'eco',
+          'Hot': 'hot',
+          'Boost': 'boost'
+        } -%}
+        {%- set boiler_selected = boiler_key_map.get(boiler_state, 'eco') -%}
+
+        {%- if hvac in ['off', 'fan_only'] %}
+          {%- set heater = 'off' -%}
+          {%- set boiler = 'off' -%}
+        {%- else %}
+          {%- set heater = 'on' -%}
+          {%- if preset == 'heat+water' %}
+            {%- set boiler = boiler_selected -%}
+          {%- else %}
+            {%- set boiler = 'off' -%}
+          {%- endif %}
+        {%- endif %}
+
+        {%- set fan_map = {
+          'off': 'off',
+          'low': 'low',
+          'medium': 'medium',
+          'high': 'high',
+          'max': 'max'
+        } -%}
+        {%- set truma_fan = fan_map.get(new_fan_mode, 'medium') -%}
+
+        {
+          "heater": "{{ heater }}",
+          "boiler": "{{ boiler }}",
+          "temp": {{ target_temp | int }},
+          "fan": "{{ truma_fan }}",
+          "energymix": "{{ emix }}",
+          "mode": "{{ truma_mode }}",
+          "mode2": "{{ truma_mode2 }}"
+        }
+```
+
+</details>
+
+---
+
+## 📟 MQTT Sensors
+
+Finally, the sensors that expose the Truma data in Home Assistant:
+
+```yaml
+  sensor:
+    - name: "Truma Room Temperature"
+      state_topic: "truma/report/room_temp"
+      unit_of_measurement: "°C"
+      device_class: temperature
+
+    - name: "Truma Water Temperature"
+      state_topic: "truma/report/water_temp"
+      unit_of_measurement: "°C"
+      device_class: temperature
+
+    - name: "Truma Error State"
+      state_topic: "truma/report/error_state"
+
+    - name: "Voltage repported by Truma"
+      state_topic: "truma/report/voltage"
+      unit_of_measurement: "V"
+      device_class: voltage
+
+    - name: "Truma heating state"
+      state_topic: "truma/report/heating_state"
+
+    - name: "Truma boiler mode"
+      state_topic: "truma/report/boiler_mode"
+```
+
+---
+
+## ✅ Usage Summary
+
+1. Make sure the Trumanita add-on is running and using the same MQTT topics.
+2. Add this YAML to your `configuration.yaml` (or a package).
+3. Restart Home Assistant.
+4. Use:
+
+   * `climate.truma_combi` as your main thermostat entity
+   * `input_select.truma_power_mode` to choose gas/electric/mix
+   * `input_select.truma_boiler_mode` to choose boiler off/eco/hot/boost
+
+Every change in the UI generates a **full JSON config** and publishes it to:
+
+```text
+truma/control/truma_config
+```
+
+which Trumanita then sends to the Truma Combi over LIN.
+
+---
+
+```
+
