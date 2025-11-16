@@ -8,7 +8,7 @@ Readme for the Home Assistant addon:
 
 
 Issues:
-When using iNet X panel, You first must have the iNet X panel connected at the same time as the raspberri pi, turn on ventilation mode on the iNet X panel, then unplug the panel and then it can be controlled by this setup with the raspberri pi.
+When using iNet X panel, You first must have the iNet X panel connected at the same time as the Raspberry pi, turn on ventilation mode on the iNet X panel, then unplug the panel and then it can be controlled by this setup with the Raspberry pi.
 
 Future plans:
 Make this auto discovrable by the MQTT add on in Home Assistant
